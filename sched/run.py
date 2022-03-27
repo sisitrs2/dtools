@@ -6,8 +6,8 @@ from pandas.tseries.offsets import MonthBegin, MonthEnd
 import win32com.client
 import inspect
 
-MEETINGS = 9
-EMAILS   = 6
+MEETINGS_FLAG = 9
+EMAILS_FLAG   = 6
 DAY = {
     0:"MONDAY",
     1:"TUESDAY",
@@ -18,12 +18,13 @@ DAY = {
     6:"SUNDAY"
 }
 EXCEL_FILE_PATH = "C:/Users/sisit/Documents/טבלת צדק קשלט.xlsx"
+FOLDER = "קשלט"
+OUTPUT_FOLDER = "קשלט"
 
 def get_reservations_calendar(begin,end):
     outlook = win32com.client.Dispatch('Outlook.Application').GetNamespace('MAPI')
-    #calendar = outlook.getDefaultFolder(MEETINGS).Items   -> This is for default folder.
-    calendar = outlook.getDefaultFolder(MEETINGS).Folders("קשלט").Folders("הסתייגויות").Items
-    #calendar = outlook.getDefaultFolder(MEETINGS).Items
+    #calendar = outlook.getDefaultFolder(MEETINGS_FLAG).Items   -> This is for default folder.
+    calendar = outlook.getDefaultFolder(MEETINGS_FLAG).Folders("קשלט").Folders("הסתייגויות").Items
     calendar.IncludeRecurrences = True
     calendar.Sort('[Start]')
 
@@ -161,7 +162,7 @@ def assign_toran(sched, days, toran, reservs, is_ok):
         # Search from sunday to wednesday
         for weekday in ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY"]:
             for day in days[weekday]:
-                if not sched[day]:
+                if day in sched and not sched[day]:
                     if toran in reservs:
                         if is_free(day, reservs[toran]):
                             sched[day] = toran
@@ -174,7 +175,7 @@ def assign_toran(sched, days, toran, reservs, is_ok):
         # Search from wednesday to sunday.
         for weekday in ["WEDNESDAY", "TUESDAY", "MONDAY", "SUNDAY"]:
             for day in days[weekday]:
-                if not sched[day]:
+                if day in sched and not sched[day]:
                     if toran in reservs:
                         if is_free(day, reservs[toran]):
                             sched[day] = toran
@@ -186,6 +187,51 @@ def assign_toran(sched, days, toran, reservs, is_ok):
     print("Error finding weekday for ", toran)
     return False
 
+def get_outlook_assigned(folder, begin, end):
+    outlook = win32com.client.Dispatch('Outlook.Application').GetNamespace('MAPI')
+    #calendar = outlook.getDefaultFolder(MEETINGS_FLAG).Items   -> This is for default folder.
+    calendar = outlook.getDefaultFolder(MEETINGS_FLAG).Folders(folder).Items
+    calendar.IncludeRecurrences = True
+    calendar.Sort('[Start]')
+
+    restriction = "[Start] >= '" + begin.strftime('%m/%d/%Y') + "' AND [END] <= '" + end.strftime('%m/%d/%Y') + "'"
+    calendar = calendar.Restrict(restriction)
+    assigned = {}
+    for item in calendar:
+        start = item.start.date()
+        end = item.end.date()
+        if item.AllDayEvent:
+            end = end - relativedelta(days=1)
+        if item.subject not in assigned:
+            assigned[item.subject] = {start: end}
+        else:
+            assigned[item.subject][start] = end
+    return assigned
+
+def get_non_assigned_relevant(assigned, relevant):
+    non_assigned = {"weekdays": relevant["weekdays"].copy(), "weekends": relevant["weekends"].copy()}
+    torans = relevant["weekdays"].keys()
+    for toran in torans:
+        if toran in assigned:
+            non_assigned["weekdays"].pop(toran)
+
+    torans = relevant["weekends"].keys()
+    for toran in torans:
+        if toran in assigned:
+            non_assigned["weekends"].pop(toran)
+    
+    return non_assigned
+
+def get_non_assigned_sched(outlook_assigned, sched):
+    non_assigned = sched.copy()
+
+    for toran in outlook_assigned.keys():
+        date = list(outlook_assigned[toran].keys())[0]
+        if date in sched.keys():
+            non_assigned.pop(date)
+
+    return non_assigned
+
 if __name__ == '__main__':
     today = date.today()
     first = date.today().replace(day=1) + relativedelta(months=1) 
@@ -196,19 +242,28 @@ if __name__ == '__main__':
     # Get Reservations.
     reservs = get_reservations(fix_first, fix_last)
     
+    # Get relevant from excel without those already assigned in outlook.
+    relevant = get_relevant(first) 
+    outlook_assigned = get_outlook_assigned(FOLDER, fix_first, fix_last)
+    relevant = get_non_assigned_relevant(outlook_assigned.keys(), relevant)
+    # relevant = {"weekends": {"name": False}, "weekdays": {"name": False}}
+
     # Create month schedule.
     sched = {}
     days = {}
     for i in date_range(first, last):
         sched[i] = ""
         if DAY[i.weekday()] not in days.keys():
+            # TODO: if not in outlook__assigned.
             days[DAY[i.weekday()]] = [i]
         else:
+            # TODO: if not in outlook__assigned.
             days[DAY[i.weekday()]].append(i)
 
-    # Get relevant.
-    relevant = get_relevant(first) # This will return {"weekends": [], "weekdays": []}
-    #print(relevant)
+    print(sched)
+    sched = get_non_assigned_sched(outlook_assigned, sched)
+    print("-------------")
+    print(sched)
 
     assign_weekends(sched, days, relevant["weekends"], reservs)
     
@@ -242,7 +297,7 @@ if __name__ == '__main__':
     
     # Add items to outlook.
     outlook = win32com.client.Dispatch("Outlook.Application")
-    calendar = outlook.GetNamespace('MAPI').getDefaultFolder(MEETINGS).Folders("test")   #-> This is for default folder.
+    calendar = outlook.GetNamespace('MAPI').getDefaultFolder(MEETINGS_FLAG).Folders(OUTPUT_FOLDER)   #-> This is for default folder.
 
     for day in sched.keys():
         if sched[day]:
